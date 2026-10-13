@@ -1,0 +1,6 @@
+aws_region      = "us-east-1"
+environment     = "development"
+vpc_cidr        = "10.40.0.0/16"
+container_image = "000000000000.dkr.ecr.us-east-1.amazonaws.com/pmab-development-backend:replace-me"
+certificate_arn = "arn:aws:acm:us-east-1:000000000000:certificate/replace-me"
+bedrock_model_id = ""

@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: pmab
+      POSTGRES_PASSWORD: pmab_local_only
+      POSTGRES_DB: pmab
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pmab"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pmab:pmab_local_only@postgres:5432/pmab
+      REDIS_URL: redis://redis:6379/0
+      DEMO_MODE: "true"
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_PATH: /app/data/edi
+      INGEST_ROOT: /app/sample_data
+      LLM_PROVIDER: mock
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./sample_data:/app/sample_data:ro
+      - edi:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pmab:pmab_local_only@postgres:5432/pmab
+      REDIS_URL: redis://redis:6379/0
+      USE_CELERY: "true"
+      DEMO_MODE: "true"
+      LLM_PROVIDER: mock
+    depends_on:
+      - redis
+      - postgres
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  edi:
