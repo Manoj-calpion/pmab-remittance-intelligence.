@@ -1,65 +1,80 @@
+<div align="center">
+
 # PMAB Remittance Intelligence
 
-Read the 835. Reconcile the money. Name the denial. Show the exposure.
+**The 835 comes in. The money is reconciled. The denial has a name. The exposure is on the screen.**
 
-PMAB Remittance Intelligence is an agentic platform for healthcare ERA and EDI X12 835 files. It ingests remittances, parses them with `Decimal` arithmetic, reconciles every claim, classifies denials, and lets five LangGraph agents explain only what the tools already proved.
+[![tests](https://github.com/Manoj-calpion/pmab-remittance-intelligence./actions/workflows/ci.yml/badge.svg)](https://github.com/Manoj-calpion/pmab-remittance-intelligence./actions/workflows/ci.yml)
 
-Central Reach stays read-only. The language model never calculates reimbursement. Missing contracts and missing dates stay missing.
+An agentic ERA / X12 835 platform for payment, denial, and payer intelligence.
 
-## What it catches
+`Python 3.12` · `FastAPI` · `LangGraph` · `React` · `PostgreSQL` · `Amazon Bedrock`
 
-| Signal | How it is decided |
+</div>
+
+---
+
+Central Reach stays **read-only**. Every dollar is calculated in Python with `Decimal`. Five agents explain only what the tools already proved. A missing contract stays missing. A missing date stays missing. The model never invents a reimbursement.
+
+## Synthetic demo, calculated live
+
+These figures come from the checked-in 835 corpus. They are labeled synthetic. They are not an approved payer result.
+
+| | |
+| --- | ---: |
+| Remittances parsed | **27** |
+| Quarantined / duplicate | **1 / 1** |
+| Claims analyzed | **117** |
+| Denial rate | **21.4%** |
+| Denied amount | **$3,860.00** |
+| Underpayment exposure | **$350.00** `synthetic_demo` |
+| Delayed payments | **6** `synthetic_demo` |
+| Critical anomaly | **Synthetic Payer North** · not a confirmed payment error |
+
+## What the platform decides
+
+| Question | Deterministic answer |
 | --- | --- |
-| Top denial reasons | CARC and RARC mappings. Contractual write-offs and patient responsibility are not denials. |
-| Payer trends | Claim volume, denial rate, denied amount, delays, and underpayment exposure by payer. |
-| Payment delays | Approved submission or acceptance date to payment date. Service dates are never used as a substitute. |
-| Underpayments | Approved contract rule versus actual reimbursement. No rule means insufficient data. |
-| Authorization denials | Adjustments mapped to the authorization category. |
-| Coding denials | Adjustments mapped to the coding category. |
-| Statistical anomalies | Modified z-score against a historical baseline. An anomaly is a lead, not a confirmed payment error. |
+| Why was it denied? | CARC and RARC mappings. Contractual write-offs and patient responsibility are not denials. |
+| Which payer is drifting? | Volume, denial rate, denied amount, delays, and underpayment exposure. |
+| How late is the payment? | Approved submission or acceptance date to payment date. A service date is never treated as a submission date. |
+| Where is the underpayment? | Approved contract rule versus actual reimbursement. No rule means insufficient data. |
+| Is it an authorization problem? | Adjustments mapped to authorization. |
+| Is it a coding problem? | Adjustments mapped to coding. |
+| Is the spike real? | Modified z-score against history. A statistical anomaly is a lead, not a confirmed financial error. |
 
-A labeled synthetic load of the checked-in 835 corpus produced:
+## Pipeline
 
-- 27 parsed files, 1 quarantined malformed file, 1 duplicate
-- 117 claims analyzed
-- Denial rate **21.4%**
-- Denied amount **$3,860.00**
-- **$350.00** underpayment variance and **6** delayed payments, both marked `synthetic_demo`
-- 1 critical denial-rate anomaly for Synthetic Payer North, stored with `is_financial_error = false`
-
-## Architecture
-
-```text
-Central Reach  ->  read-only retrieval  ->  incremental ingest
-                                              |
-                                              v
-                                         original 835
-                                              |
-                                              v
-                                    parser + reconciliation
-                                              |
-                                              v
-                                          PostgreSQL
-                                              |
-                      +-----------------------+-----------------------+
-                      |                       |                       |
-               denial engine           payment engine          anomaly detector
-                      |                       |                       |
-                      +-----------------------+-----------------------+
-                                              |
-                                              v
-                              LangGraph supervisor
-                     denial · payment · payer · root cause · insight
-                                              |
-                                              v
-                                    FastAPI  ->  React
+```mermaid
+flowchart TD
+  CR["Central Reach<br/>read-only"] --> ING["Incremental ingest<br/>SHA-256 · watermark · quarantine"]
+  ING --> EDI["X12 835 parser<br/>Decimal reconciliation"]
+  EDI --> DB[("PostgreSQL")]
+  DB --> DEN["Denial engine"]
+  DB --> PAY["Payment engine"]
+  DB --> ANO["Anomaly detector"]
+  DEN --> SUP["LangGraph supervisor"]
+  PAY --> SUP
+  ANO --> SUP
+  SUP --> API["FastAPI"]
+  API --> UI["React intelligence dashboard"]
 ```
 
-Money is calculated in Python. Agents call read-only aggregate tools. They have no SQL and no path back into Central Reach.
+Agents have no SQL and no path back into Central Reach.
 
-## Run the demo
+| Agent | Job |
+| --- | --- |
+| Denial intelligence | Categories, payers, procedure codes |
+| Payment intelligence | Delays, underpayments, calculation traces |
+| Payer intelligence | Behavior and monthly movement |
+| Root cause | Correlation and missing evidence. A hypothesis is not a confirmed cause. |
+| Insight and reporting | Executive narrative built from tool output |
 
-Python 3.12 is required. Docker and Node.js are optional. No AWS account is required.
+The supervisor routes, then stops. Bedrock stays closed until `BEDROCK_PHI_APPROVED=true` and a model ID are set. Until then a labeled mock provider narrates the same evidence. A failed Bedrock call is not silently replaced with a mock. Exposure at or above **$1,000.00** waits for human review.
+
+## Run it
+
+Python 3.12. Docker and Node are optional. No AWS account required.
 
 ```powershell
 cd backend
@@ -82,9 +97,7 @@ npm run dev
 | API | http://127.0.0.1:8000 |
 | API reference | http://127.0.0.1:8000/docs |
 
-On an empty database, demo mode ingests `sample_data/synthetic_835`, loads labeled demo contracts, and loads labeled demo submission dates.
-
-Sign in:
+Demo mode ingests `sample_data/synthetic_835` into an empty database and loads labeled demo contracts and submission dates. The login form fills the analyst account.
 
 | Email | Password | Role |
 | --- | --- | --- |
@@ -92,7 +105,7 @@ Sign in:
 | `admin@pmab.demo` | `ChangeMe-Demo-Only` | Admin |
 | `viewer@pmab.demo` | `ChangeMe-Demo-Only` | Viewer |
 
-The login form fills the analyst account while demo mode is on. `docker compose up --build` starts PostgreSQL with pgvector, Redis, the API, a Celery worker, and the dashboard. The worker stays idle unless `USE_CELERY=true`.
+`docker compose up --build` brings up PostgreSQL with pgvector, Redis, the API, a Celery worker, and the dashboard. The worker stays idle unless `USE_CELERY=true`.
 
 ```powershell
 cd backend
@@ -101,34 +114,27 @@ cd ../frontend
 npm test
 ```
 
-## The agents
-
-The supervisor routes a question to the agents that have evidence, then stops. It does not loop.
-
-1. **Denial intelligence** compares categories, payers, and procedure codes.
-2. **Payment intelligence** ranks delays and underpayments and keeps the calculation trace.
-3. **Payer intelligence** compares payer behavior and monthly movement.
-4. **Root cause** correlates findings and lists missing evidence. A hypothesis is not a confirmed cause.
-5. **Insight and reporting** writes the executive narrative from the tool output.
-
-Bedrock is wired and closed. It runs only when `BEDROCK_PHI_APPROVED=true` and a model ID is set. Until then the labeled mock provider narrates the same evidence. A failed Bedrock call is not replaced with a mock answer.
-
-Human review is required when financial exposure reaches the configured threshold. The default is $1,000.00.
-
 ## Stack
 
-Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, PostgreSQL, Polars, Celery, Redis, LangGraph, Amazon Bedrock, React, TypeScript, Vite, Tailwind, TanStack Query, Apache ECharts. Local development falls back to SQLite. Production startup refuses SQLite, demo mode, the default JWT secret, and local file storage.
+| Layer | Choice |
+| --- | --- |
+| API | FastAPI, Pydantic v2, SQLAlchemy 2, Alembic |
+| Money and files | Python `Decimal`, Polars, custom X12 835 parser |
+| Data | PostgreSQL locally via Docker; SQLite for a zero-dependency demo |
+| Agents | LangGraph supervisor, read-only tools, Amazon Bedrock when approved |
+| UI | React, TypeScript, Vite, Tailwind, TanStack Query, Apache ECharts |
+| Jobs | Celery and Redis, or inline execution |
+| Cloud shape | Terraform for a private VPC, RDS, encrypted S3, ECS Fargate, SQS, Cognito, KMS, CloudWatch |
 
-Terraform in `infrastructure/terraform` describes a private VPC, RDS, encrypted S3, ECS Fargate, SQS, Cognito, KMS, and CloudWatch. It has not been applied. Applying it creates billable AWS resources.
+Production startup refuses demo mode, the default JWT secret, SQLite, and local file storage. The Terraform definition has not been applied. Applying it creates billable AWS resources.
 
 ## Rules that do not bend
 
 - Central Reach is never modified, posted, corrected, or resubmitted.
-- No Central Reach endpoint is invented. The API connector refuses every call until an approved specification exists.
+- No Central Reach endpoint is invented. The connector refuses every call until an approved specification exists.
 - No payer contract, denial code, payment date, or claim is fabricated.
-- Every monetary value uses `Decimal`.
-- Every file is validated. Malformed files are quarantined. Duplicates are detected by SHA-256.
-- Raw 835 contents are not written to logs. Patient identifiers stay behind `phi:view`.
+- Every file is validated. Malformed files are quarantined. Duplicates are caught by SHA-256.
+- Raw 835 contents are not logged. Patient identifiers require `phi:view`.
 - This repository does not claim HIPAA compliance.
 
-The open business inputs are listed in `docs/implementation/missing-requirements.md`. Read that file before treating any figure as a recovery demand.
+Open business inputs live in [`docs/implementation/missing-requirements.md`](docs/implementation/missing-requirements.md). Read that file before treating any figure as a recovery demand.
