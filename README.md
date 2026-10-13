@@ -1,12 +1,65 @@
 # PMAB Remittance Intelligence
 
-Local ERA/835 platform for parsing remittances, reconciling payments, classifying denials, and explaining the results. Financial amounts are calculated in Python with `Decimal`. The language model only narrates tool output.
+Read the 835. Reconcile the money. Name the denial. Show the exposure.
 
-Central Reach is read-only and is not connected. The API connector refuses every call until an approved specification and credentials exist. Do not apply the Terraform configuration unless you explicitly intend to create AWS resources.
+PMAB Remittance Intelligence is an agentic platform for healthcare ERA and EDI X12 835 files. It ingests remittances, parses them with `Decimal` arithmetic, reconciles every claim, classifies denials, and lets five LangGraph agents explain only what the tools already proved.
 
-## Run the local demo
+Central Reach stays read-only. The language model never calculates reimbursement. Missing contracts and missing dates stay missing.
 
-Python 3.12 is required. Docker and Node.js are optional.
+## What it catches
+
+| Signal | How it is decided |
+| --- | --- |
+| Top denial reasons | CARC and RARC mappings. Contractual write-offs and patient responsibility are not denials. |
+| Payer trends | Claim volume, denial rate, denied amount, delays, and underpayment exposure by payer. |
+| Payment delays | Approved submission or acceptance date to payment date. Service dates are never used as a substitute. |
+| Underpayments | Approved contract rule versus actual reimbursement. No rule means insufficient data. |
+| Authorization denials | Adjustments mapped to the authorization category. |
+| Coding denials | Adjustments mapped to the coding category. |
+| Statistical anomalies | Modified z-score against a historical baseline. An anomaly is a lead, not a confirmed payment error. |
+
+A labeled synthetic load of the checked-in 835 corpus produced:
+
+- 27 parsed files, 1 quarantined malformed file, 1 duplicate
+- 117 claims analyzed
+- Denial rate **21.4%**
+- Denied amount **$3,860.00**
+- **$350.00** underpayment variance and **6** delayed payments, both marked `synthetic_demo`
+- 1 critical denial-rate anomaly for Synthetic Payer North, stored with `is_financial_error = false`
+
+## Architecture
+
+```text
+Central Reach  ->  read-only retrieval  ->  incremental ingest
+                                              |
+                                              v
+                                         original 835
+                                              |
+                                              v
+                                    parser + reconciliation
+                                              |
+                                              v
+                                          PostgreSQL
+                                              |
+                      +-----------------------+-----------------------+
+                      |                       |                       |
+               denial engine           payment engine          anomaly detector
+                      |                       |                       |
+                      +-----------------------+-----------------------+
+                                              |
+                                              v
+                              LangGraph supervisor
+                     denial · payment · payer · root cause · insight
+                                              |
+                                              v
+                                    FastAPI  ->  React
+```
+
+Money is calculated in Python. Agents call read-only aggregate tools. They have no SQL and no path back into Central Reach.
+
+## Run the demo
+
+Python 3.12 is required. Docker and Node.js are optional. No AWS account is required.
 
 ```powershell
 cd backend
@@ -17,32 +70,65 @@ $env:LLM_PROVIDER = "mock"
 python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-On an empty database, demo mode ingests the synthetic 835 files in `sample_data/synthetic_835` and loads labeled demo contracts and submission dates. Open the dashboard at http://127.0.0.1:5173. http://127.0.0.1:8000 is the API: `/` links to the dashboard, and `/docs` is the API reference.
+```powershell
+cd frontend
+npm install
+npm run dev
+```
 
-Demo sign-in, only when `DEMO_MODE=true`:
+| Surface | Address |
+| --- | --- |
+| Dashboard | http://127.0.0.1:5173 |
+| API | http://127.0.0.1:8000 |
+| API reference | http://127.0.0.1:8000/docs |
 
-- Email: `analyst@pmab.demo`
-- Password: `ChangeMe-Demo-Only`
+On an empty database, demo mode ingests `sample_data/synthetic_835`, loads labeled demo contracts, and loads labeled demo submission dates.
 
-`admin@pmab.demo` and `viewer@pmab.demo` use that same password. The login form fills both values when demo mode is on.
+Sign in:
 
-The dashboard is in `frontend`. From that directory, `npm install`, `npm test`, and `npm run dev` serve it at http://localhost:5173. The Vite server proxies `/api` to port 8000.
+| Email | Password | Role |
+| --- | --- | --- |
+| `analyst@pmab.demo` | `ChangeMe-Demo-Only` | Analyst |
+| `admin@pmab.demo` | `ChangeMe-Demo-Only` | Admin |
+| `viewer@pmab.demo` | `ChangeMe-Demo-Only` | Viewer |
 
-`docker compose up --build` starts PostgreSQL with pgvector, Redis, the API, a Celery worker, and the dashboard. It does not require an AWS account. The worker is idle unless `USE_CELERY=true`.
+The login form fills the analyst account while demo mode is on. `docker compose up --build` starts PostgreSQL with pgvector, Redis, the API, a Celery worker, and the dashboard. The worker stays idle unless `USE_CELERY=true`.
 
-## What the demo calculated
+```powershell
+cd backend
+python -m pytest
+cd ../frontend
+npm test
+```
 
-A full synthetic load produced 27 parsed files, 1 quarantined malformed file, and 1 duplicate. The API then reported 117 claims analyzed, a denial rate of 0.213675, and a denied amount of 3860.00. Six payment delays and 350.00 of underpayment variance were returned with basis `synthetic_demo`. One critical denial-rate anomaly was raised for Synthetic Payer North and stored with `is_financial_error=false`.
+## The agents
 
-Contractual CARC 45 and patient-responsibility amounts are not counted as denials. Missing approved submission dates and missing approved contract
+The supervisor routes a question to the agents that have evidence, then stops. It does not loop.
 
-The current suite covers EDI parsing, reconciliation, denial classification, delay and underpayment rules, anomaly thresholds, duplicate and quarantine handling, API authentication, report authorization, agent routing, and the Bedrock approval guard.
+1. **Denial intelligence** compares categories, payers, and procedure codes.
+2. **Payment intelligence** ranks delays and underpayments and keeps the calculation trace.
+3. **Payer intelligence** compares payer behavior and monthly movement.
+4. **Root cause** correlates findings and lists missing evidence. A hypothesis is not a confirmed cause.
+5. **Insight and reporting** writes the executive narrative from the tool output.
 
-## Production boundaries
+Bedrock is wired and closed. It runs only when `BEDROCK_PHI_APPROVED=true` and a model ID is set. Until then the labeled mock provider narrates the same evidence. A failed Bedrock call is not replaced with a mock answer.
 
-- Set `ENVIRONMENT=production`, `DEMO_MODE=false`, a real `JWT_SECRET`, PostgreSQL, and `STORAGE_BACKEND=s3`.
-- Leave `BEDROCK_PHI_APPROVED=false` until the BAA, Region, model, and HIPAA review are complete. The Bedrock provider then refuses the call. It does not fall back to the mock.
-- Leave `CENTRAL_REACH_API_ENABLED=false` until the approved API or SFTP specification is available.
-- Terraform in `infrastructure/terraform` is a starting definition. It has not been applied.
+Human review is required when financial exposure reaches the configured threshold. The default is $1,000.00.
 
-See `docs/implementation/missing-requirements.md` before treating any result as a recovery demand or a production control.
+## Stack
+
+Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2, Alembic, PostgreSQL, Polars, Celery, Redis, LangGraph, Amazon Bedrock, React, TypeScript, Vite, Tailwind, TanStack Query, Apache ECharts. Local development falls back to SQLite. Production startup refuses SQLite, demo mode, the default JWT secret, and local file storage.
+
+Terraform in `infrastructure/terraform` describes a private VPC, RDS, encrypted S3, ECS Fargate, SQS, Cognito, KMS, and CloudWatch. It has not been applied. Applying it creates billable AWS resources.
+
+## Rules that do not bend
+
+- Central Reach is never modified, posted, corrected, or resubmitted.
+- No Central Reach endpoint is invented. The API connector refuses every call until an approved specification exists.
+- No payer contract, denial code, payment date, or claim is fabricated.
+- Every monetary value uses `Decimal`.
+- Every file is validated. Malformed files are quarantined. Duplicates are detected by SHA-256.
+- Raw 835 contents are not written to logs. Patient identifiers stay behind `phi:view`.
+- This repository does not claim HIPAA compliance.
+
+The open business inputs are listed in `docs/implementation/missing-requirements.md`. Read that file before treating any figure as a recovery demand.
