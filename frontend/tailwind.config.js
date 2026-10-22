@@ -1,19 +1,25 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  darkMode: "class",
   theme: {
     extend: {
       colors: {
-        ink: "#07111f",
-        panel: "#102033",
-        line: "#243752",
-        mist: "#93a7c2",
-        foam: "#e7eef8",
-        teal: "#2ec4b6",
+        canvas: "var(--canvas)",
+        inset: "var(--inset)",
+        panel: "var(--panel)",
+        foam: "var(--foam)",
+        mist: "var(--mist)",
+        faint: "var(--faint)",
+        line: "var(--line)",
       },
       fontFamily: {
-        sans: ["IBM Plex Sans", "Segoe UI", "sans-serif"],
-        mono: ["IBM Plex Mono", "Consolas", "monospace"],
+        sans: ["Inter", "Segoe UI", "sans-serif"],
+        display: ["Instrument Serif", "Times New Roman", "serif"],
+        mono: ["JetBrains Mono", "Consolas", "monospace"],
+      },
+      boxShadow: {
+        lift: "0 18px 50px rgba(0,0,0,0.28)",
       },
     },
   },

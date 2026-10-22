@@ -1,11 +1,14 @@
 """HTTP API for remittance intelligence."""
 
+import csv
+import io
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -29,7 +32,8 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.phi import mask_identifier, mask_name
 from app.core.security import PERMISSIONS, authenticate
-from app.ingestion.pipeline import ingest_content, ingest_directory
+from app.ingestion.archive import ArchiveError, expand_upload
+from app.ingestion.pipeline import ingest_content, ingest_directory, lifecycle_label, retry_quarantined
 from app.integrations.connectors import CentralReachAPIConnector, IntegrationDisabledError
 from app.models import (
     AiInsight,
@@ -40,6 +44,7 @@ from app.models import (
     ClaimServiceLine,
     DenialCategoryMapping,
     EdiTransaction,
+    EraRecord,
     Payer,
     PayerContract,
     ProcessingError,
@@ -54,7 +59,7 @@ from app.reporting.exports import build_report, to_csv, to_pdf, to_xlsx
 from app.seed.reference import ensure_denial_mappings
 
 router = APIRouter()
-ALLOWED_UPLOADS = {".835", ".edi", ".txt", ".x12"}
+ALLOWED_UPLOADS = {".835", ".edi", ".txt", ".x12", ".zip"}
 REPORTS = {
     "daily_remittance",
     "weekly_denial",
@@ -161,6 +166,8 @@ def meta() -> dict:
         "bedrock_phi_approved": settings.bedrock_phi_approved,
         "storage_backend": settings.storage_backend,
         "central_reach_status": central_reach,
+        "ingestion_mode": "downloaded_835_files",
+        "ingestion_note": "Primary source is downloaded X12 835 files. Live Central Reach retrieval stays a separate client-managed connector.",
         "filename_pattern": settings.stored_filename_pattern,
         "filename_pattern_note": "The default PLUTUS pattern is a platform default. Confirm the organization's file naming convention before production.",
         **(
@@ -249,14 +256,23 @@ def list_remittances(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     status: str | None = None,
+    lifecycle: str | None = None,
+    q: str | None = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_permission("remittances:read")),
 ) -> dict:
     statement = select(RemittanceFile)
     count_statement = select(func.count()).select_from(RemittanceFile)
-    if status:
+    if lifecycle:
+        mapped = _status_for_lifecycle(lifecycle)
+        statement = statement.where(RemittanceFile.status == mapped)
+        count_statement = count_statement.where(RemittanceFile.status == mapped)
+    elif status:
         statement = statement.where(RemittanceFile.status == status)
         count_statement = count_statement.where(RemittanceFile.status == status)
+    if q:
+        statement = statement.where(RemittanceFile.original_filename.ilike(f"%{q.strip()}%"))
+        count_statement = count_statement.where(RemittanceFile.original_filename.ilike(f"%{q.strip()}%"))
     total = db.scalar(count_statement) or 0
     rows = db.scalars(statement.order_by(RemittanceFile.received_at.desc()).offset((page - 1) * page_size).limit(page_size)).all()
     return _page(
@@ -272,6 +288,8 @@ def list_remittances(
                 "source_record_id": row.source_record_id,
                 "file_size": row.file_size,
                 "received_at": row.received_at.isoformat() if row.received_at else None,
+                "parsed_at": row.parsed_at.isoformat() if row.parsed_at else None,
+                "lifecycle": lifecycle_label(row.status, row.reconciliation_status),
             }
             for row in rows
         ],
@@ -288,14 +306,38 @@ def get_remittance(file_id: UUID, db: Session = Depends(get_db), _: User = Depen
         raise AppError(404, "not_found", "Remittance file was not found.")
     checks = db.scalars(select(ReconciliationResult).where(ReconciliationResult.remittance_file_id == row.id)).all()
     errors = db.scalars(select(ProcessingError).where(ProcessingError.remittance_file_id == row.id)).all()
+    era = db.get(EraRecord, row.era_record_id) if row.era_record_id else None
+    transactions = db.scalars(select(EdiTransaction).where(EdiTransaction.remittance_file_id == row.id)).all()
+    claim_rows = db.execute(
+        select(Claim, EdiTransaction, Payer)
+        .join(EdiTransaction, Claim.edi_transaction_id == EdiTransaction.id)
+        .outerjoin(Payer, EdiTransaction.payer_id == Payer.id)
+        .where(EdiTransaction.remittance_file_id == row.id)
+        .order_by(Claim.created_at.asc())
+    ).all()
+    trace = (era.attributes or {}).get("stages") if era and era.attributes else None
     return {
         "id": str(row.id),
         "original_filename": row.original_filename,
         "stored_filename": row.stored_filename,
         "status": row.status,
+        "lifecycle": lifecycle_label(row.status, row.reconciliation_status),
         "reconciliation_status": row.reconciliation_status,
         "sha256": row.sha256,
         "source_system": row.source_system,
+        "file_size": row.file_size,
+        "received_at": row.received_at.isoformat() if row.received_at else None,
+        "parsed_at": row.parsed_at.isoformat() if row.parsed_at else None,
+        "duration_ms": (era.attributes or {}).get("duration_ms") if era and era.attributes else None,
+        "record_counts": (era.attributes or {}).get("record_counts") if era and era.attributes else None,
+        "stages": trace
+        or [
+            {"stage": "RECEIVED", "at": row.received_at.isoformat() if row.received_at else None},
+            {"stage": lifecycle_label(row.status, row.reconciliation_status), "at": row.parsed_at.isoformat() if row.parsed_at else None},
+        ],
+        "payment_amount": f"{sum((item.payment_amount for item in transactions), Decimal('0.00')):.2f}" if transactions else None,
+        "trace_numbers": [item.trace_number for item in transactions if item.trace_number],
+        "claims": [_claim_payload(claim, transaction, payer, False) for claim, transaction, payer in claim_rows],
         "reconciliation": [
             {
                 "scope": item.scope,
@@ -399,10 +441,199 @@ async def upload_remittance(
         raise AppError(400, "invalid_upload", "The file exceeds the configured upload size.")
     if b"\x00" in content:
         raise AppError(400, "invalid_upload", "The file is not a text EDI interchange.")
+    if suffix == ".zip":
+        return await _accept_uploads(request, db, user, [(name, content)])
     result = ingest_content(db, content, name, source_system="upload", source_record_id=name)
     _audit(db, user, "upload_remittance", "remittance_file", result.file_id, request, {"status": result.status})
     db.commit()
-    return {"status": result.status, "file_id": result.file_id, "message": result.message, "reconciliation_status": result.reconciliation_status}
+    return {
+        "status": result.status,
+        "lifecycle": lifecycle_label(result.status, result.reconciliation_status),
+        "file_id": result.file_id,
+        "message": result.message,
+        "reconciliation_status": result.reconciliation_status,
+        "sha256": result.sha256,
+    }
+
+
+@router.post("/remittances/batch")
+async def upload_batch(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("remittances:ingest")),
+) -> dict:
+    settings = get_settings()
+    if not files:
+        raise AppError(400, "invalid_upload", "Choose at least one remittance file.")
+    if len(files) > 40:
+        raise AppError(400, "invalid_upload", "Upload 40 files or fewer at a time.")
+    incoming: list[tuple[str, bytes]] = []
+    for upload in files:
+        name = upload.filename or "upload.835"
+        suffix = Path(name).suffix.lower()
+        if suffix not in ALLOWED_UPLOADS:
+            raise AppError(400, "invalid_upload", f"{Path(name).name} is not a supported remittance or ZIP file.")
+        content = await upload.read()
+        if len(content) > settings.max_upload_bytes:
+            raise AppError(400, "invalid_upload", f"{Path(name).name} exceeds the configured upload size.")
+        if suffix != ".zip" and b"\x00" in content:
+            raise AppError(400, "invalid_upload", f"{Path(name).name} is not a text EDI interchange.")
+        incoming.append((name, content))
+    return await _accept_uploads(request, db, user, incoming)
+
+
+@router.post("/remittances/{file_id}/retry")
+def retry_remittance(
+    file_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("remittances:ingest")),
+) -> dict:
+    try:
+        result = retry_quarantined(db, file_id)
+    except LookupError as exc:
+        raise AppError(404, "not_found", str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise AppError(404, "not_found", "The stored remittance file could not be read.") from exc
+    if result.status == "not_retryable":
+        raise AppError(409, "not_retryable", result.message)
+    _audit(db, user, "retry_remittance", "remittance_file", result.file_id, request, {"status": result.status})
+    db.commit()
+    return {
+        "status": result.status,
+        "lifecycle": lifecycle_label(result.status, result.reconciliation_status),
+        "file_id": result.file_id,
+        "message": result.message,
+        "reconciliation_status": result.reconciliation_status,
+    }
+
+
+@router.get("/remittances/{file_id}/error-report")
+def remittance_error_report(
+    file_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("remittances:read")),
+):
+    row = db.get(RemittanceFile, file_id)
+    if row is None:
+        raise AppError(404, "not_found", "Remittance file was not found.")
+    errors = db.scalars(select(ProcessingError).where(ProcessingError.remittance_file_id == row.id)).all()
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["filename", "sha256", "lifecycle", "stage", "message", "created_at"])
+    if not errors:
+        writer.writerow([row.original_filename, row.sha256, lifecycle_label(row.status, row.reconciliation_status), "", "No processing errors were recorded.", ""])
+    for item in errors:
+        writer.writerow(
+            [
+                row.original_filename,
+                row.sha256,
+                lifecycle_label(row.status, row.reconciliation_status),
+                item.stage,
+                item.message,
+                item.created_at.isoformat() if item.created_at else "",
+            ]
+        )
+    _audit(db, user, "export_error_report", "remittance_file", str(row.id), request)
+    db.commit()
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{Path(row.original_filename).stem}-errors.csv"'},
+    )
+
+
+def _status_for_lifecycle(lifecycle: str) -> str:
+    mapping = {
+        "COMPLETED": "parsed",
+        "QUARANTINED": "quarantined",
+        "REQUIRES_REVIEW": "parsed_out_of_balance",
+        "RECEIVED": "received",
+        "FAILED": "failed",
+    }
+    status = mapping.get(lifecycle.upper())
+    if status is None:
+        raise AppError(400, "invalid_lifecycle", "Lifecycle filter is not recognized.")
+    return status
+
+
+async def _accept_uploads(request: Request, db: Session, user: User, incoming: list[tuple[str, bytes]]) -> dict:
+    settings = get_settings()
+    job = ProcessingJob(job_type="upload_batch", status="running", started_at=utcnow(), triggered_by=user.email)
+    db.add(job)
+    db.commit()
+    results = []
+    try:
+        members = []
+        for name, content in incoming:
+            members.extend(
+                expand_upload(
+                    name,
+                    content,
+                    max_member_bytes=settings.max_upload_bytes,
+                    max_total_bytes=settings.max_upload_bytes * 8,
+                )
+            )
+    except ArchiveError as exc:
+        job.status = "failed"
+        job.finished_at = utcnow()
+        job.error_summary = str(exc)
+        db.commit()
+        raise AppError(400, "invalid_upload", str(exc)) from exc
+    for member in members:
+        if member.content is None:
+            results.append(
+                {
+                    "filename": member.filename,
+                    "status": "rejected",
+                    "lifecycle": "FAILED",
+                    "file_id": None,
+                    "message": member.rejected_reason,
+                    "sha256": None,
+                    "reconciliation_status": None,
+                }
+            )
+            continue
+        if b"\x00" in member.content:
+            results.append(
+                {
+                    "filename": member.filename,
+                    "status": "rejected",
+                    "lifecycle": "FAILED",
+                    "file_id": None,
+                    "message": "The file is not a text EDI interchange.",
+                    "sha256": None,
+                    "reconciliation_status": None,
+                }
+            )
+            continue
+        result = ingest_content(db, member.content, member.filename, source_system="upload", source_record_id=member.filename, job_id=job.id)
+        results.append(
+            {
+                "filename": member.filename,
+                "status": result.status,
+                "lifecycle": lifecycle_label(result.status, result.reconciliation_status),
+                "file_id": result.file_id,
+                "message": result.message,
+                "sha256": result.sha256,
+                "reconciliation_status": result.reconciliation_status,
+                "claim_count": result.claim_count,
+            }
+        )
+    job.status = "completed"
+    job.finished_at = utcnow()
+    job.stats = {
+        "files": len(results),
+        "parsed": sum(1 for item in results if item["status"] == "parsed"),
+        "quarantined": sum(1 for item in results if item["status"] == "quarantined"),
+        "duplicates": sum(1 for item in results if item["status"] == "duplicate"),
+        "rejected": sum(1 for item in results if item["status"] == "rejected"),
+    }
+    _audit(db, user, "upload_batch", "processing_job", str(job.id), request, job.stats)
+    db.commit()
+    return {"job_id": str(job.id), "stats": job.stats, "results": results}
 
 
 @router.post("/processing/run")
@@ -555,6 +786,30 @@ def update_alert(
     return {"id": str(alert.id), "status": alert.status}
 
 
+@router.get("/ai/investigations")
+def list_investigations(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_permission("ai:investigate")),
+) -> dict:
+    rows = db.scalars(select(AiInvestigation).order_by(AiInvestigation.created_at.desc()).limit(50)).all()
+    return {
+        "items": [
+            {
+                "id": str(row.id),
+                "question": row.question,
+                "status": row.status,
+                "provider_name": row.provider_name,
+                "model_id": row.model_id,
+                "needs_human_review": row.needs_human_review,
+                "summary": (row.result or {}).get("summary"),
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "reviewed_at": row.reviewed_at.isoformat() if row.reviewed_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
 @router.post("/ai/ask")
 @router.post("/ai/investigate")
 def ask(
@@ -627,8 +882,6 @@ def export_report(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("reports:export")),
 ):
-    from fastapi.responses import Response
-
     if report_name not in REPORTS:
         raise AppError(404, "not_found", "Report type was not found.")
     if export_format not in {"csv", "xlsx", "pdf"}:

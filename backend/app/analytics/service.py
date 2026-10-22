@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -508,6 +508,7 @@ def payer_analytics(db: Session, filters: AnalyticsFilter, settings: Settings | 
         payers.append(
             {
                 **row,
+                "low_volume": row["claims"] < active.anomaly_min_claims,
                 "delayed_payments": delay_by_payer.get(row["key"], 0) if delays["metric_basis"] != "insufficient_data" else None,
                 "underpayment_amount": money(underpay_by_payer.get(row["key"], ZERO))
                 if underpayments["metric_basis"] != "insufficient_data"
@@ -519,7 +520,37 @@ def payer_analytics(db: Session, filters: AnalyticsFilter, settings: Settings | 
         "delay_basis": delays["metric_basis"],
         "underpayment_basis": underpayments["metric_basis"],
         "trend": denials["trend"],
+        "movement": _payer_movement(denials["trend"]),
+        "low_volume_minimum_claims": active.anomaly_min_claims,
     }
+
+
+def _payer_movement(trend: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in trend:
+        grouped[row["payer"]].append(row)
+    movement = []
+    for payer, rows in grouped.items():
+        ordered = sorted(rows, key=lambda item: item["month"])
+        current = ordered[-1]
+        previous = ordered[-2] if len(ordered) > 1 else None
+        change = None
+        if previous and current.get("denial_rate") and previous.get("denial_rate"):
+            change = f"{(Decimal(current['denial_rate']) - Decimal(previous['denial_rate'])):.6f}"
+        movement.append(
+            {
+                "payer": payer,
+                "month": current["month"],
+                "previous_month": previous["month"] if previous else None,
+                "denial_rate": current.get("denial_rate"),
+                "previous_denial_rate": previous.get("denial_rate") if previous else None,
+                "denial_rate_change": change,
+                "claims": current.get("claims"),
+                "note": "Month-over-month denial rate from payment dates." if previous else "Only one month is available for this payer.",
+            }
+        )
+    movement.sort(key=lambda item: item["payer"])
+    return movement
 
 
 def category_slice(db: Session, filters: AnalyticsFilter, category: str, settings: Settings | None = None) -> dict:
@@ -555,12 +586,38 @@ def overview(db: Session, filters: AnalyticsFilter, settings: Settings | None = 
     remittances = db.query(RemittanceFile).count()
     high_alerts = db.query(Alert).filter(Alert.status == "open", Alert.severity.in_(["high", "critical"])).count()
     insights = db.scalars(select(AiInsight).order_by(AiInsight.created_at.desc()).limit(5)).all()
+    claim_rows = _claim_rows(db, filters, active)
+    paid = sum((row[0].payment_amount for row in claim_rows), ZERO)
+    paid_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    denied_by_month: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    claims_by_month: dict[str, int] = defaultdict(int)
+    for claim, transaction, _payer in claim_rows:
+        if transaction.payment_date is None:
+            continue
+        month = transaction.payment_date.strftime("%Y-%m")
+        paid_by_month[month] += claim.payment_amount
+        claims_by_month[month] += 1
+        if claim.is_denied:
+            denied_by_month[month] += claim.denied_amount
+    payment_trend = [
+        {
+            "month": month,
+            "paid_amount": money(paid_by_month[month]),
+            "denied_amount": money(denied_by_month[month]),
+            "claims": claims_by_month[month],
+        }
+        for month in sorted(claims_by_month)
+    ]
     return {
         "demo_mode": active.demo_mode,
+        "as_of": datetime.now(UTC).isoformat(),
         "total_remittances": remittances,
         "claims_analyzed": denials["claim_level"]["claims"],
+        "total_paid": money(paid) if claim_rows else None,
+        "payers_analyzed": len(denials["by_payer"]),
         "denial_rate": denials["claim_level"]["denial_rate"],
         "denied_amount": denials["claim_level"]["denied_amount"],
+        "payment_trend": payment_trend,
         "potential_underpayments": underpayments["underpaid_amount"],
         "underpayment_basis": underpayments["metric_basis"],
         "underpayment_notice": underpayments["notice"],
