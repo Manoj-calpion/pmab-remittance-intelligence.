@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -41,6 +41,28 @@ class IngestResult:
     message: str
     claim_count: int = 0
     reconciliation_status: str | None = None
+
+
+def lifecycle_label(status: str, reconciliation_status: str | None = None) -> str:
+    """Map stored file status onto the operator-facing lifecycle.
+
+    Stored statuses stay stable for existing calculations and tests.
+    """
+    if status == "duplicate":
+        return "DUPLICATE"
+    if status == "quarantined":
+        return "QUARANTINED"
+    if status == "failed":
+        return "FAILED"
+    if status == "parsed_out_of_balance" or reconciliation_status == "out_of_balance":
+        return "REQUIRES_REVIEW"
+    if status == "parsed":
+        return "COMPLETED"
+    return "RECEIVED"
+
+
+def _trace(stages: list[tuple[str, datetime]]) -> list[dict]:
+    return [{"stage": name, "at": moment.isoformat()} for name, moment in stages]
 
 
 def load_mapping_rules(db: Session) -> dict[tuple[str, str], MappingRule]:
@@ -138,6 +160,7 @@ def ingest_content(
             reconciliation_status=existing.reconciliation_status,
         )
 
+    received_at = datetime.now(UTC)
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError:
@@ -151,6 +174,7 @@ def ingest_content(
             parsed = parse_835(text)
         except EDIParseError as exc:
             parse_error = str(exc)[:500]
+    validated_at = datetime.now(UTC)
 
     payment_date = parsed.transactions[0].payment_date if parsed and parsed.transactions else None
     control_number = parsed.interchange_control_number if parsed else None
@@ -179,7 +203,7 @@ def ingest_content(
         trace_number=parsed.transactions[0].trace_number if parsed and parsed.transactions else None,
         status="quarantined" if parse_error else "parsed",
         watermark_value=source_record_id,
-        attributes={"original_filename": filename, "sha256": digest},
+        attributes={"original_filename": filename, "sha256": digest, "lifecycle": "VALIDATING"},
     )
     db.add(era)
     db.flush()
@@ -193,11 +217,27 @@ def ingest_content(
         status="quarantined" if parse_error else "received",
         source_system=source_system,
         source_record_id=source_record_id,
-        received_at=datetime.now(UTC),
+        received_at=received_at,
     )
     db.add(file_row)
     db.flush()
     if parse_error or parsed is None:
+        finished = datetime.now(UTC)
+        era.attributes = {
+            **(era.attributes or {}),
+            "lifecycle": "QUARANTINED",
+            "duration_ms": int((finished - received_at).total_seconds() * 1000),
+            "record_counts": {"claims": 0, "transactions": 0},
+            "failure_reason": parse_error or "Unknown parse failure",
+            "stages": _trace(
+                [
+                    ("RECEIVED", received_at),
+                    ("VALIDATING", received_at),
+                    ("PARSING", validated_at),
+                    ("QUARANTINED", finished),
+                ]
+            ),
+        }
         db.add(
             ProcessingError(
                 job_id=job_id,
@@ -238,8 +278,26 @@ def ingest_content(
 
     file_row.status = "parsed" if status == "balanced" else "parsed_out_of_balance"
     file_row.reconciliation_status = status
-    file_row.parsed_at = datetime.now(UTC)
+    finished = datetime.now(UTC)
+    file_row.parsed_at = finished
     era.status = file_row.status
+    lifecycle = lifecycle_label(file_row.status, status)
+    era.attributes = {
+        **(era.attributes or {}),
+        "lifecycle": lifecycle,
+        "duration_ms": int((finished - received_at).total_seconds() * 1000),
+        "record_counts": {"claims": claim_count, "transactions": len(parsed.transactions)},
+        "stages": _trace(
+            [
+                ("RECEIVED", received_at),
+                ("VALIDATING", received_at),
+                ("PARSING", validated_at),
+                ("NORMALIZING", validated_at),
+                ("ANALYZING", finished),
+                (lifecycle, finished),
+            ]
+        ),
+    }
     db.commit()
     return IngestResult("parsed", str(file_row.id), digest, "Parsed and stored", claim_count, status)
 
@@ -417,6 +475,48 @@ def _persist_checks(db, file_id, transaction_id, checks: list[ReconciliationChec
                 detail=check.detail,
             )
         )
+
+
+def retry_quarantined(db: Session, file_id, settings: Settings | None = None) -> IngestResult:
+    """Re-read a quarantined original and parse it again.
+
+    Parsed files are left untouched so a retry cannot duplicate claims.
+    The stored bytes are deleted from the database only after they have been
+    read back. A still-malformed file is quarantined again.
+    """
+    row = db.get(RemittanceFile, file_id)
+    if row is None:
+        raise LookupError("Remittance file was not found.")
+    if row.status != "quarantined":
+        return IngestResult(
+            status="not_retryable",
+            file_id=str(row.id),
+            sha256=row.sha256,
+            message="Only quarantined files can be retried. Parsed claims were not inserted again.",
+            reconciliation_status=row.reconciliation_status,
+        )
+    active = settings or get_settings()
+    content = get_storage(active).get(row.storage_uri)
+    filename = row.original_filename
+    source_system = row.source_system
+    source_record_id = row.source_record_id
+    era_id = row.era_record_id
+    db.execute(delete(ProcessingError).where(ProcessingError.remittance_file_id == row.id))
+    db.delete(row)
+    db.flush()
+    if era_id is not None:
+        era = db.get(EraRecord, era_id)
+        if era is not None:
+            db.delete(era)
+    db.commit()
+    return ingest_content(
+        db,
+        content,
+        filename,
+        source_system=source_system,
+        source_record_id=source_record_id,
+        settings=active,
+    )
 
 
 def known_source_ids(db: Session, source_system: str) -> set[str]:
