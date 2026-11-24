@@ -105,12 +105,16 @@ def validate_runtime(settings: Settings) -> None:
     problems: list[str] = []
     if settings.demo_mode:
         problems.append("DEMO_MODE must be false in production")
-    if settings.jwt_secret in {"", "local-dev-only-change-me"}:
+    if len(settings.jwt_secret.strip().encode("utf-8")) < 32 or settings.jwt_secret == "local-dev-only-change-me":
         problems.append("JWT_SECRET must be set from Secrets Manager in production")
-    if settings.database_url.startswith("sqlite"):
+    if not settings.uses_postgres:
         problems.append("production requires PostgreSQL")
-    if settings.storage_backend == "local":
+    if settings.storage_backend != "s3":
         problems.append("production storage backend must be s3")
+    if settings.storage_backend == "s3" and not (settings.s3_bucket or "").strip():
+        problems.append("S3_BUCKET must be configured in production")
+    if "*" in settings.cors_origin_list:
+        problems.append("Wildcard CORS origins are not allowed in production")
     if problems:
         raise RuntimeError("Refusing to start: " + "; ".join(problems))
 
