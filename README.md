@@ -2,21 +2,29 @@
 
 # PMAB Remittance Intelligence
 
+<img src="docs/assets/pmab-hero.svg" alt="PMAB — Follow the money. Prove every decision." width="100%" />
+
 **The 835 comes in. The money is reconciled. The denial has a name. The exposure is on the screen.**
 
 [![tests](https://github.com/Manoj-calpion/pmab-remittance-intelligence./actions/workflows/ci.yml/badge.svg)](https://github.com/Manoj-calpion/pmab-remittance-intelligence./actions/workflows/ci.yml)
 
 An agentic ERA / X12 835 platform for payment, denial, and payer intelligence.
 
-`Python 3.12` · `FastAPI` · `LangGraph` · `React` · `PostgreSQL` · `Amazon Bedrock`
+**PYTHON 3.12 · FASTAPI · LANGGRAPH · REACT · POSTGRESQL · BEDROCK**
+
+[Mission](#01--mission) · [Telemetry](#02--synthetic-demo-telemetry) · [Architecture](#04--system-architecture) · [Launch](#06--launch-sequence) · [Guardrails](#08--rules-that-do-not-bend)
+
+<img src="docs/assets/pmab-carousel.svg" alt="Four stages: ingest, reconcile, investigate, decide." width="100%" />
 
 </div>
 
 ---
 
+## 01 / Mission
+
 Central Reach stays **read-only**. Every dollar is calculated in Python with `Decimal`. Five agents explain only what the tools already proved. A missing contract stays missing. A missing date stays missing. The model never invents a reimbursement.
 
-## Synthetic demo, calculated live
+## 02 / Synthetic demo telemetry
 
 These figures come from the checked-in 835 corpus. They are labeled synthetic. They are not an approved payer result.
 
@@ -31,7 +39,7 @@ These figures come from the checked-in 835 corpus. They are labeled synthetic. T
 | Delayed payments | **6** `synthetic_demo` |
 | Critical anomaly | **Synthetic Payer North** · not a confirmed payment error |
 
-## What the platform decides
+## 03 / Intelligence capabilities
 
 | Question | Deterministic answer |
 | --- | --- |
@@ -43,7 +51,7 @@ These figures come from the checked-in 835 corpus. They are labeled synthetic. T
 | Is it a coding problem? | Adjustments mapped to coding. |
 | Is the spike real? | Modified z-score against history. A statistical anomaly is a lead, not a confirmed financial error. |
 
-## Pipeline
+## 04 / System architecture
 
 ```mermaid
 flowchart TD
@@ -60,6 +68,8 @@ flowchart TD
   API --> UI["React intelligence dashboard"]
 ```
 
+## 05 / Agent command center
+
 Agents have no SQL and no path back into Central Reach.
 
 | Agent | Job |
@@ -72,7 +82,7 @@ Agents have no SQL and no path back into Central Reach.
 
 The supervisor routes, then stops. Bedrock stays closed until `BEDROCK_PHI_APPROVED=true` and a model ID are set. Until then a labeled mock provider narrates the same evidence. A failed Bedrock call is not silently replaced with a mock. Exposure at or above **$1,000.00** waits for human review.
 
-## Run it
+## 06 / Launch sequence
 
 Python 3.12. Docker and Node are optional. No AWS account required.
 
@@ -114,7 +124,7 @@ cd ../frontend
 npm test
 ```
 
-## Stack
+## 07 / Technology stack
 
 | Layer | Choice |
 | --- | --- |
@@ -128,7 +138,7 @@ npm test
 
 Production startup refuses demo mode, the default JWT secret, SQLite, and local file storage. The Terraform definition has not been applied. Applying it creates billable AWS resources.
 
-## Rules that do not bend
+## 08 / Rules that do not bend
 
 - Central Reach is never modified, posted, corrected, or resubmitted.
 - No Central Reach endpoint is invented. The connector refuses every call until an approved specification exists.
