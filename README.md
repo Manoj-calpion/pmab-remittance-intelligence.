@@ -2,7 +2,7 @@
 
 # PMAB Remittance Intelligence
 
-<img src="docs/assets/pmab-hero.svg" alt="PMAB — Follow the money. Prove every decision." width="100%" />
+<img src="docs/assets/pmab-hero-v2.svg" alt="PMAB — Financial intelligence. Evidence before inference." width="100%" />
 
 **The 835 comes in. The money is reconciled. The denial has a name. The exposure is on the screen.**
 
@@ -25,6 +25,8 @@ An agentic ERA / X12 835 platform for payment, denial, and payer intelligence.
 Central Reach stays **read-only**. Every dollar is calculated in Python with `Decimal`. Five agents explain only what the tools already proved. A missing contract stays missing. A missing date stays missing. The model never invents a reimbursement.
 
 ## 02 / Synthetic demo telemetry
+
+<img src="docs/assets/pmab-telemetry.svg" alt="Synthetic demo: 27 remittances, 117 claims, 21.4% denial rate, $3,860 denied, $350 underpayment exposure, 6 delayed payments." width="100%" />
 
 These figures come from the checked-in 835 corpus. They are labeled synthetic. They are not an approved payer result.
 
@@ -55,6 +57,9 @@ These figures come from the checked-in 835 corpus. They are labeled synthetic. T
 
 ```mermaid
 flowchart TD
+  classDef source fill:#0e3447,stroke:#22d3ee,color:#f8fafc
+  classDef engine fill:#172554,stroke:#818cf8,color:#f8fafc
+  classDef output fill:#134e4a,stroke:#2dd4bf,color:#f8fafc
   CR["Central Reach<br/>read-only"] --> ING["Incremental ingest<br/>SHA-256 · watermark · quarantine"]
   ING --> EDI["X12 835 parser<br/>Decimal reconciliation"]
   EDI --> DB[("PostgreSQL")]
@@ -66,9 +71,14 @@ flowchart TD
   ANO --> SUP
   SUP --> API["FastAPI"]
   API --> UI["React intelligence dashboard"]
+  class CR,ING,EDI,DB source
+  class DEN,PAY,ANO,SUP engine
+  class API,UI output
 ```
 
 ## 05 / Agent command center
+
+<img src="docs/assets/pmab-agents.svg" alt="Five specialists: denial, payment, payer, root cause, insight and reporting." width="100%" />
 
 Agents have no SQL and no path back into Central Reach.
 
@@ -81,6 +91,8 @@ Agents have no SQL and no path back into Central Reach.
 | Insight and reporting | Executive narrative built from tool output |
 
 The supervisor routes, then stops. Bedrock stays closed until `BEDROCK_PHI_APPROVED=true` and a model ID are set. Until then a labeled mock provider narrates the same evidence. A failed Bedrock call is not silently replaced with a mock. Exposure at or above **$1,000.00** waits for human review.
+
+---
 
 ## 06 / Launch sequence
 
