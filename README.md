@@ -2,9 +2,9 @@
 
 # PMAB Remittance Intelligence
 
-<img src="docs/assets/pmab-hero-v2.svg" alt="PMAB — Financial intelligence. Evidence before inference." width="100%" />
+<img src="docs/assets/pmab-hero-v3.svg" alt="PMAB — From financial signals to verified decisions." width="100%" />
 
-**The 835 comes in. The money is reconciled. The denial has a name. The exposure is on the screen.**
+**INGEST THE SIGNAL. RECONCILE THE MONEY. EXPLAIN THE EVIDENCE.**
 
 [![tests](https://github.com/Manoj-calpion/pmab-remittance-intelligence./actions/workflows/ci.yml/badge.svg)](https://github.com/Manoj-calpion/pmab-remittance-intelligence./actions/workflows/ci.yml)
 
@@ -55,6 +55,8 @@ These figures come from the checked-in 835 corpus. They are labeled synthetic. T
 
 ## 04 / System architecture
 
+<img src="docs/assets/pmab-flight-path.svg" alt="Source, validate, reconcile, intelligence, review." width="100%" />
+
 ```mermaid
 flowchart TD
   classDef source fill:#0e3447,stroke:#22d3ee,color:#f8fafc
@@ -96,7 +98,7 @@ The supervisor routes, then stops. Bedrock stays closed until `BEDROCK_PHI_APPRO
 
 ## 06 / Launch sequence
 
-Python 3.12. Docker and Node are optional. No AWS account required.
+Python 3.12 is required. Node is required for the local frontend; Docker is optional. No AWS account required for the mock demo.
 
 ```powershell
 cd backend
@@ -152,6 +154,8 @@ Production startup refuses demo mode, the default JWT secret, SQLite, and local 
 
 ## 08 / Rules that do not bend
 
+> **Evidence is the authority. The model is the narrator.**
+
 - Central Reach is never modified, posted, corrected, or resubmitted.
 - No Central Reach endpoint is invented. The connector refuses every call until an approved specification exists.
 - No payer contract, denial code, payment date, or claim is fabricated.
@@ -160,3 +164,15 @@ Production startup refuses demo mode, the default JWT secret, SQLite, and local 
 - This repository does not claim HIPAA compliance.
 
 Open business inputs live in [`docs/implementation/missing-requirements.md`](docs/implementation/missing-requirements.md). Read that file before treating any figure as a recovery demand.
+
+---
+
+<div align="center">
+
+**PMAB / END OF TRANSMISSION**
+
+*Read-only by design. Evidence-first by architecture.*
+
+[Return to mission](#01--mission)
+
+</div>
